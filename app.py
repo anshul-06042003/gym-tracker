@@ -4,8 +4,7 @@ from dotenv import load_dotenv
 import os
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 import time
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
@@ -16,70 +15,35 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="💪 Gym Tracker", layout="wide", initial_sidebar_state="collapsed")
 
-# ── MOBILE FRIENDLY CSS ──────────────────────────────────────────────────────
+# ── CSS ──────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Mobile friendly */
     .stApp { max-width: 100%; }
-    
-    /* Buttons */
-    .stButton>button {
-        border-radius: 12px;
-        font-weight: 600;
-        transition: all 0.2s;
-    }
-    
-    /* Metrics */
+    .stButton>button { border-radius: 12px; font-weight: 600; transition: all 0.2s; }
     [data-testid="metric-container"] {
-        background: #1e2130;
-        border-radius: 12px;
-        padding: 12px;
-        border: 1px solid #2e3250;
+        background: #1e2130; border-radius: 12px;
+        padding: 12px; border: 1px solid #2e3250;
     }
-    
-    /* Cards */
-    .workout-card {
-        background: #1e2130;
-        border-radius: 12px;
-        padding: 16px;
-        margin: 8px 0;
-        border-left: 4px solid #FF4B4B;
-    }
-    
-    /* PR badge */
-    .pr-badge {
-        background: #FFD700;
-        color: #000;
-        padding: 2px 8px;
-        border-radius: 12px;
-        font-size: 12px;
-        font-weight: 700;
-    }
-    
-    /* Streak */
-    .streak-box {
-        background: linear-gradient(135deg, #FF4B4B, #FF8C00);
-        border-radius: 12px;
-        padding: 16px;
-        text-align: center;
-        color: white;
-        font-size: 24px;
-        font-weight: 700;
-    }
-    
-    /* Timer */
     .timer-box {
-        background: #0e1117;
-        border: 2px solid #FF4B4B;
-        border-radius: 12px;
-        padding: 16px;
-        text-align: center;
-        font-size: 32px;
-        font-weight: 700;
-        color: #FF4B4B;
+        background: #0e1117; border: 2px solid #FF4B4B;
+        border-radius: 12px; padding: 16px;
+        text-align: center; font-size: 32px;
+        font-weight: 700; color: #FF4B4B;
     }
-
-    /* Hide streamlit branding on mobile */
+    .day-banner {
+        background: linear-gradient(135deg, #FF4B4B, #FF8C00);
+        border-radius: 12px; padding: 16px;
+        text-align: center; color: white;
+        font-size: 20px; font-weight: 700;
+        margin-bottom: 16px;
+    }
+    .rest-banner {
+        background: linear-gradient(135deg, #2196F3, #00BCD4);
+        border-radius: 12px; padding: 16px;
+        text-align: center; color: white;
+        font-size: 20px; font-weight: 700;
+        margin-bottom: 16px;
+    }
     @media (max-width: 768px) {
         .stSidebar { width: 80% !important; }
         h1 { font-size: 1.5rem !important; }
@@ -118,7 +82,23 @@ WORKOUT_PLAN = {
     "Custom": []
 }
 
-MOODS = ["💪 Great", "😐 Average", "😴 Tired", "🔥 On Fire", "😤 Pushed Through"]
+# Auto day detection — Monday=0 ... Sunday=6
+DAY_MAP = {
+    0: "Day 1 - Chest + Triceps",
+    1: "Day 2 - Back + Biceps",
+    2: "Day 3 - Legs",
+    3: "Day 4 - Shoulders",
+    4: "Day 5 - Upper Body",
+    5: "Day 6 - Biceps + Triceps + Abs",
+    6: None   # Sunday = Rest Day
+}
+
+DAY_NAMES = {
+    0: "Monday", 1: "Tuesday", 2: "Wednesday",
+    3: "Thursday", 4: "Friday", 5: "Saturday", 6: "Sunday"
+}
+
+MOODS = ["💪 Great", "🔥 On Fire", "😐 Average", "😴 Tired", "😤 Pushed Through"]
 
 # ── SESSION STATE ────────────────────────────────────────────────────────────
 for key in ["user", "token", "timer_start", "timer_running", "rest_duration"]:
@@ -154,12 +134,39 @@ def get_client():
         supabase.auth.set_session(st.session_state.token, st.session_state.token)
     return supabase
 
+# ── HELPERS ───────────────────────────────────────────────────────────────────
+def get_streak(client, user_id):
+    try:
+        res = client.table("workouts").select("date").eq("user_id", user_id).order("date", desc=True).execute()
+        if not res.data:
+            return 0
+        dates = sorted(set(r["date"] for r in res.data), reverse=True)
+        streak = 0
+        today = date.today()
+        for i, d in enumerate(dates):
+            d = date.fromisoformat(d)
+            if d == today - timedelta(days=i):
+                streak += 1
+            else:
+                break
+        return streak
+    except:
+        return 0
+
+def get_pr(client, user_id, exercise):
+    try:
+        res = client.table("workouts").select("weight_kg,reps,date")\
+            .eq("user_id", user_id).eq("exercise_name", exercise)\
+            .order("weight_kg", desc=True).limit(1).execute()
+        return res.data[0] if res.data else None
+    except:
+        return None
+
 # ── LOGIN PAGE ────────────────────────────────────────────────────────────────
 def show_login():
     st.markdown("<h1 style='text-align:center'>💪 Gym Tracker</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align:center;color:#888'>Track your workouts. Crush your goals.</p>", unsafe_allow_html=True)
     st.divider()
-
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         tab1, tab2 = st.tabs(["🔑 Login", "📝 Register"])
@@ -183,43 +190,14 @@ def show_login():
                 else:
                     st.error(msg)
 
-# ── HELPER: STREAK ───────────────────────────────────────────────────────────
-def get_streak(client, user_id):
-    try:
-        res = client.table("workouts").select("date").eq("user_id", user_id).order("date", desc=True).execute()
-        if not res.data:
-            return 0
-        dates = sorted(set(r["date"] for r in res.data), reverse=True)
-        streak = 0
-        today = date.today()
-        for i, d in enumerate(dates):
-            d = date.fromisoformat(d)
-            expected = today - timedelta(days=i)
-            if d == expected:
-                streak += 1
-            else:
-                break
-        return streak
-    except:
-        return 0
-
-# ── HELPER: PR CHECK ─────────────────────────────────────────────────────────
-def get_pr(client, user_id, exercise):
-    try:
-        res = client.table("workouts").select("weight_kg,reps,date").eq("user_id", user_id).eq("exercise_name", exercise).order("weight_kg", desc=True).limit(1).execute()
-        if res.data:
-            return res.data[0]
-        return None
-    except:
-        return None
-
 # ── MAIN APP ──────────────────────────────────────────────────────────────────
 def show_app():
     client = get_client()
     user_id = st.session_state.user.id
 
+    # Sidebar
     with st.sidebar:
-        st.markdown(f"### 💪 Gym Tracker")
+        st.markdown("### 💪 Gym Tracker")
         st.markdown(f"👤 `{st.session_state.user.email}`")
         streak = get_streak(client, user_id)
         st.markdown(f"🔥 **Streak: {streak} days**")
@@ -244,8 +222,31 @@ def show_app():
     if page == "📝 Log Workout":
         st.title("📝 Log Workout")
 
-        # Day plan selector
-        day_plan = st.selectbox("📅 Select Today's Plan", list(WORKOUT_PLAN.keys()))
+        # Auto detect today's day
+        today_weekday = date.today().weekday()
+        auto_day = DAY_MAP.get(today_weekday)
+        today_name = DAY_NAMES.get(today_weekday)
+
+        if auto_day:
+            st.markdown(f"""
+            <div class='day-banner'>
+                📅 Today is {today_name} — {auto_day}
+            </div>
+            """, unsafe_allow_html=True)
+            default_idx = list(WORKOUT_PLAN.keys()).index(auto_day)
+        else:
+            st.markdown(f"""
+            <div class='rest-banner'>
+                😴 Today is {today_name} — REST DAY! Recovery is key 💤
+            </div>
+            """, unsafe_allow_html=True)
+            default_idx = len(WORKOUT_PLAN) - 1
+
+        day_plan = st.selectbox(
+            "📅 Change Plan (optional)",
+            list(WORKOUT_PLAN.keys()),
+            index=default_idx
+        )
 
         if day_plan == "Custom":
             exercise_options = []
@@ -257,18 +258,21 @@ def show_app():
             workout_date = st.date_input("Date", value=date.today())
             if exercise_options:
                 exercise = st.selectbox("Exercise", exercise_options)
+                custom_ex = st.text_input("Or type custom exercise", placeholder="Leave blank to use above")
+                if custom_ex:
+                    exercise = custom_ex
             else:
                 exercise = st.text_input("Exercise Name", placeholder="Enter exercise name")
             mood = st.selectbox("Mood Today", MOODS)
 
         with col2:
             sets = st.number_input("Number of Sets", min_value=1, max_value=10, value=3)
-            st.markdown("**Weight per set (kg):**")
+            st.markdown("**Weight & Reps per set:**")
             set_weights = []
             set_reps = []
             for i in range(sets):
                 c1, c2 = st.columns(2)
-                w = c1.number_input(f"Set {i+1} Weight", min_value=0.0, max_value=500.0, value=0.0, step=0.5, key=f"sw_{i}")
+                w = c1.number_input(f"Set {i+1} Weight (kg)", min_value=0.0, max_value=500.0, value=0.0, step=0.5, key=f"sw_{i}")
                 r = c2.number_input(f"Set {i+1} Reps", min_value=1, max_value=100, value=10, key=f"sr_{i}")
                 set_weights.append(w)
                 set_reps.append(r)
@@ -280,11 +284,9 @@ def show_app():
                 st.error("Exercise name required!")
             else:
                 try:
-                    avg_weight = sum(set_weights) / len(set_weights) if set_weights else 0
                     avg_reps = sum(set_reps) // len(set_reps) if set_reps else 10
                     max_weight = max(set_weights) if set_weights else 0
 
-                    # Save main workout
                     res = client.table("workouts").insert({
                         "user_id": user_id,
                         "date": str(workout_date),
@@ -299,7 +301,6 @@ def show_app():
 
                     workout_id = res.data[0]["id"]
 
-                    # Save per-set data
                     for i, (w, r) in enumerate(zip(set_weights, set_reps)):
                         client.table("workout_sets").insert({
                             "user_id": user_id,
@@ -309,9 +310,8 @@ def show_app():
                             "reps": r
                         }).execute()
 
-                    # Check PR
                     pr = get_pr(client, user_id, exercise)
-                    if pr and max_weight >= pr["weight_kg"]:
+                    if pr and max_weight >= pr["weight_kg"] and max_weight > 0:
                         st.success(f"🏆 NEW PR! {exercise} — {max_weight} kg!")
                         st.balloons()
                     else:
@@ -324,16 +324,20 @@ def show_app():
         # ── REST TIMER ────────────────────────────────────────────────────────
         st.divider()
         st.subheader("⏱️ Rest Timer")
-        rest_time = st.select_slider("Rest Duration", options=[30, 45, 60, 90, 120, 180, 240, 300],
-                                      value=90, format_func=lambda x: f"{x}s ({x//60}m {x%60}s)" if x >= 60 else f"{x}s")
+        rest_time = st.select_slider(
+            "Rest Duration",
+            options=[30, 45, 60, 90, 120, 180, 240, 300],
+            value=90,
+            format_func=lambda x: f"{x//60}m {x%60}s" if x >= 60 else f"{x}s"
+        )
 
         c1, c2 = st.columns(2)
-        if c1.button("▶️ Start Rest Timer", use_container_width=True):
+        if c1.button("▶️ Start Timer", use_container_width=True, type="primary"):
             st.session_state.timer_start = time.time()
             st.session_state.timer_running = True
             st.session_state.rest_duration = rest_time
 
-        if c2.button("⏹️ Stop Timer", use_container_width=True):
+        if c2.button("⏹️ Stop", use_container_width=True):
             st.session_state.timer_running = False
             st.session_state.timer_start = None
 
@@ -342,14 +346,10 @@ def show_app():
             remaining = max(0, st.session_state.rest_duration - elapsed)
             mins = int(remaining) // 60
             secs = int(remaining) % 60
-            st.markdown(f"""
-            <div class='timer-box'>
-                ⏱️ {mins:02d}:{secs:02d}
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(f"<div class='timer-box'>⏱️ {mins:02d}:{secs:02d}</div>", unsafe_allow_html=True)
             st.progress(1 - remaining / st.session_state.rest_duration)
             if remaining <= 0:
-                st.success("✅ Rest Complete! Time to lift! 💪")
+                st.success("✅ Rest done! Time to lift! 💪")
                 st.session_state.timer_running = False
             else:
                 time.sleep(1)
@@ -359,12 +359,14 @@ def show_app():
         st.divider()
         st.subheader(f"📋 Today's Log — {date.today()}")
         try:
-            res = client.table("workouts").select("*").eq("user_id", user_id).eq("date", str(date.today())).order("created_at").execute()
+            res = client.table("workouts").select("*").eq("user_id", user_id)\
+                .eq("date", str(date.today())).order("created_at").execute()
             if res.data:
                 for row in res.data:
-                    with st.expander(f"🏋️ {row['exercise_name']} — {row['sets']} sets | {row['mood']}"):
-                        # Per-set data
-                        sets_res = client.table("workout_sets").select("*").eq("workout_id", row["id"]).order("set_number").execute()
+                    mood_val = row.get('mood', '💪 Great')
+                    with st.expander(f"🏋️ {row['exercise_name']} — {row['sets']} sets | {mood_val}"):
+                        sets_res = client.table("workout_sets").select("*")\
+                            .eq("workout_id", row["id"]).order("set_number").execute()
                         if sets_res.data:
                             sets_df = pd.DataFrame(sets_res.data)[["set_number", "weight_kg", "reps"]]
                             sets_df.columns = ["Set", "Weight (kg)", "Reps"]
@@ -374,7 +376,7 @@ def show_app():
                         new_sets = col1.number_input("Sets", value=int(row['sets']), min_value=1, key=f"s_{row['id']}")
                         new_reps = col2.number_input("Reps", value=int(row['reps']), min_value=1, key=f"r_{row['id']}")
                         new_weight = col3.number_input("Weight (kg)", value=float(row['weight_kg']), min_value=0.0, step=0.5, key=f"w_{row['id']}")
-                        new_notes = st.text_area("Notes", value=row['notes'] or "", key=f"n_{row['id']}")
+                        new_notes = st.text_area("Notes", value=row.get('notes') or "", key=f"n_{row['id']}")
 
                         c1, c2 = st.columns(2)
                         if c1.button("✅ Update", key=f"u_{row['id']}", use_container_width=True):
@@ -398,7 +400,8 @@ def show_app():
     elif page == "📊 My History":
         st.title("📊 Workout History")
         try:
-            res = client.table("workouts").select("*").eq("user_id", user_id).order("date", desc=True).execute()
+            res = client.table("workouts").select("*").eq("user_id", user_id)\
+                .order("date", desc=True).execute()
             if res.data:
                 df = pd.DataFrame(res.data)
                 col1, col2 = st.columns(2)
@@ -416,9 +419,14 @@ def show_app():
                 c2.metric("Unique Exercises", filtered["exercise_name"].nunique())
                 c3.metric("Total Sets", int(filtered["sets"].sum()))
 
-                show = filtered[["date", "exercise_name", "sets", "reps", "weight_kg", "mood", "notes"]].copy()
-                show.columns = ["Date", "Exercise", "Sets", "Reps", "Weight (kg)", "Mood", "Notes"]
-                show["Date"] = show["Date"].dt.strftime("%Y-%m-%d")
+                show_cols = ["date", "exercise_name", "sets", "reps", "weight_kg"]
+                if "mood" in filtered.columns:
+                    show_cols.append("mood")
+                if "notes" in filtered.columns:
+                    show_cols.append("notes")
+
+                show = filtered[show_cols].copy()
+                show["date"] = show["date"].dt.strftime("%Y-%m-%d")
                 st.dataframe(show, use_container_width=True)
 
                 st.divider()
@@ -429,7 +437,7 @@ def show_app():
                         new_sets = col1.number_input("Sets", value=int(row['sets']), min_value=1, key=f"hs_{row['id']}")
                         new_reps = col2.number_input("Reps", value=int(row['reps']), min_value=1, key=f"hr_{row['id']}")
                         new_weight = col3.number_input("Weight (kg)", value=float(row['weight_kg']), min_value=0.0, step=0.5, key=f"hw_{row['id']}")
-                        new_notes = st.text_area("Notes", value=row['notes'] or "", key=f"hn_{row['id']}")
+                        new_notes = st.text_area("Notes", value=row.get('notes') or "", key=f"hn_{row['id']}")
                         c1, c2 = st.columns(2)
                         if c1.button("✅ Update", key=f"hu_{row['id']}", use_container_width=True):
                             client.table("workouts").update({
@@ -480,7 +488,6 @@ def show_app():
                                title="🔁 Reps Progress", color_discrete_sequence=["#00CC96"])
                 st.plotly_chart(fig3, use_container_width=True)
 
-                # Mood chart
                 if "mood" in df.columns:
                     mood_counts = df["mood"].value_counts().reset_index()
                     mood_counts.columns = ["Mood", "Count"]
@@ -507,10 +514,8 @@ def show_app():
                 ).reset_index()
                 prs.columns = ["Exercise", "Max Weight (kg)", "Max Reps", "Total Sessions"]
                 prs = prs.sort_values("Max Weight (kg)", ascending=False)
-
                 st.dataframe(prs, use_container_width=True)
 
-                # Top 5 chart
                 top5 = prs.head(5)
                 fig = px.bar(top5, x="Exercise", y="Max Weight (kg)",
                              title="🏆 Top 5 Lifts", color="Max Weight (kg)",
@@ -526,7 +531,6 @@ def show_app():
     # ══════════════════════════════════════════════════════════════════════════
     elif page == "⚖️ Body Weight":
         st.title("⚖️ Body Weight Tracker")
-
         with st.form("bw_form"):
             col1, col2 = st.columns(2)
             bw_date = col1.date_input("Date", value=date.today())
@@ -550,16 +554,13 @@ def show_app():
             if res.data:
                 df = pd.DataFrame(res.data)
                 df["date"] = pd.to_datetime(df["date"])
-
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Current", f"{df['weight_kg'].iloc[-1]} kg")
                 col2.metric("Min", f"{df['weight_kg'].min()} kg")
                 col3.metric("Max", f"{df['weight_kg'].max()} kg")
-
                 fig = px.line(df, x="date", y="weight_kg", markers=True,
                               title="⚖️ Body Weight Progress", color_discrete_sequence=["#00CC96"])
                 st.plotly_chart(fig, use_container_width=True)
-
                 show = df[["date", "weight_kg", "notes"]].copy()
                 show["date"] = show["date"].dt.strftime("%Y-%m-%d")
                 show.columns = ["Date", "Weight (kg)", "Notes"]
@@ -574,14 +575,31 @@ def show_app():
     # ══════════════════════════════════════════════════════════════════════════
     elif page == "📅 Weekly Summary":
         st.title("📅 Weekly Summary")
+
+        # Weekly plan overview
+        st.subheader("📋 Your Weekly Plan")
+        plan_data = {
+            "Day": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+            "Workout": [
+                "Day 1 - Chest + Triceps",
+                "Day 2 - Back + Biceps",
+                "Day 3 - Legs",
+                "Day 4 - Shoulders",
+                "Day 5 - Upper Body",
+                "Day 6 - Biceps + Triceps + Abs",
+                "😴 Rest Day"
+            ]
+        }
+        st.dataframe(pd.DataFrame(plan_data), use_container_width=True)
+        st.divider()
+
         try:
             week_start = date.today() - timedelta(days=date.today().weekday())
             week_end = week_start + timedelta(days=6)
+            st.markdown(f"**This Week: {week_start} → {week_end}**")
 
             res = client.table("workouts").select("*").eq("user_id", user_id)\
                 .gte("date", str(week_start)).lte("date", str(week_end)).execute()
-
-            st.markdown(f"**Week: {week_start} → {week_end}**")
 
             if res.data:
                 df = pd.DataFrame(res.data)
@@ -594,22 +612,22 @@ def show_app():
                 col3.metric("Total Sets", int(df["sets"].sum()))
                 col4.metric("Total Volume", f"{df['volume'].sum():.0f} kg")
 
-                # Daily breakdown
                 daily = df.groupby(df["date"].dt.strftime("%A")).agg(
                     Exercises=("exercise_name", "count"),
                     Volume=("volume", "sum")
                 ).reset_index()
                 daily.columns = ["Day", "Exercises", "Volume"]
-
                 fig = px.bar(daily, x="Day", y="Volume",
                              title="📊 Daily Volume This Week",
                              color="Volume", color_continuous_scale="Reds")
                 st.plotly_chart(fig, use_container_width=True)
 
-                st.dataframe(df[["date", "exercise_name", "sets", "reps", "weight_kg", "mood"]].rename(
-                    columns={"date": "Date", "exercise_name": "Exercise", "sets": "Sets",
-                             "reps": "Reps", "weight_kg": "Weight (kg)", "mood": "Mood"}
-                ), use_container_width=True)
+                show_cols = ["date", "exercise_name", "sets", "reps", "weight_kg"]
+                if "mood" in df.columns:
+                    show_cols.append("mood")
+                show = df[show_cols].copy()
+                show["date"] = show["date"].dt.strftime("%Y-%m-%d")
+                st.dataframe(show, use_container_width=True)
             else:
                 st.info("No workouts this week yet. Get to the gym! 💪")
         except Exception as e:
@@ -620,25 +638,22 @@ def show_app():
     # ══════════════════════════════════════════════════════════════════════════
     elif page == "🔢 1RM Calculator":
         st.title("🔢 1 Rep Max Calculator")
-        st.markdown("Calculate your estimated **1 Rep Max** using the Epley formula: `1RM = weight × (1 + reps/30)`")
+        st.markdown("Epley Formula: `1RM = weight × (1 + reps/30)`")
 
         col1, col2 = st.columns(2)
         weight = col1.number_input("Weight Lifted (kg)", min_value=1.0, max_value=500.0, value=100.0, step=0.5)
         reps = col2.number_input("Reps Performed", min_value=1, max_value=30, value=8)
 
-        if reps == 1:
-            one_rm = weight
-        else:
-            one_rm = weight * (1 + reps / 30)
+        one_rm = weight if reps == 1 else weight * (1 + reps / 30)
 
         st.markdown(f"""
-        <div style='background:#1e2130;padding:20px;border-radius:12px;text-align:center;margin:16px 0'>
-            <h2 style='color:#FF4B4B'>Estimated 1RM</h2>
-            <h1 style='color:white'>{one_rm:.1f} kg</h1>
+        <div style='background:#1e2130;padding:20px;border-radius:12px;
+                    text-align:center;margin:16px 0;border:2px solid #FF4B4B'>
+            <h3 style='color:#888;margin:0'>Estimated 1RM</h3>
+            <h1 style='color:#FF4B4B;margin:8px 0'>{one_rm:.1f} kg</h1>
         </div>
         """, unsafe_allow_html=True)
 
-        # Percentage table
         st.subheader("📊 Training Percentages")
         percentages = [100, 95, 90, 85, 80, 75, 70, 65, 60]
         table_data = {
@@ -647,6 +662,7 @@ def show_app():
             "Suggested Reps": ["1", "2-3", "3-4", "4-6", "6-8", "8-10", "10-12", "12-15", "15-20"]
         }
         st.dataframe(pd.DataFrame(table_data), use_container_width=True)
+
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 if st.session_state.user is None:
